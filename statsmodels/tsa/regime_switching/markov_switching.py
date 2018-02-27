@@ -112,11 +112,18 @@ def py_hamilton_filter(initial_probabilities, regime_transition,
     Parameters
     ----------
     initial_probabilities : array
-        Array of initial probabilities, shaped (k_regimes,).
+        Array of initial probabilities, shaped (k_regimes,) giving the
+        distribution of the regime process at time t = -order where order
+        is a nonnegative integer.
     regime_transition : array
         Matrix of regime transition probabilities, shaped either
         (k_regimes, k_regimes, 1) or if there are time-varying transition
-        probabilities (k_regimes, k_regimes, nobs).
+        probabilities (k_regimes, k_regimes, nobs + order).  Entry [i, j,
+        t] contains the probability of moving from j at time t-1 to i at
+        time t, so each matrix regime_transition[:, :, t] should be left
+        stochastic.  The first order entries and initial_probabilities are
+        used to produce the initial joint distribution of dimension order +
+        1 at time t=0.
     conditional_likelihoods : array
         Array of likelihoods conditional on the last `order+1` regimes,
         shaped (k_regimes,)*(order + 1) + (nobs,).
@@ -138,6 +145,7 @@ def py_hamilton_filter(initial_probabilities, regime_transition,
         the joint probability of the current and previous `order` periods
         being in each combination of regimes conditional on time t
         information. Shaped (k_regimes,) * (order + 1) + (nobs,).
+
     """
 
     # Dimensions
@@ -145,6 +153,14 @@ def py_hamilton_filter(initial_probabilities, regime_transition,
     nobs = conditional_likelihoods.shape[-1]
     order = conditional_likelihoods.ndim - 2
     dtype = conditional_likelihoods.dtype
+
+    # Check for compatible shapes.
+    incompatible_shapes = (
+        regime_transition.shape[-1] not in (1, nobs + order)
+        or regime_transition.shape[:2] != (k_regimes, k_regimes)
+        or conditional_likelihoods.shape[0] != k_regimes)
+    if incompatible_shapes:
+        raise ValueError('Arguments do not have compatible shapes')
 
     # Storage
     # Pr[S_t = s_t | Y_t]
@@ -167,6 +183,11 @@ def py_hamilton_filter(initial_probabilities, regime_transition,
         tmp = np.reshape(regime_transition[..., i], shape + (1,) * i) * tmp
     filtered_joint_probabilities[..., 0] = tmp
 
+    # Check that regime_transition is oriented correctly.
+    if not np.allclose(np.sum(regime_transition, axis=0), 1):
+        raise ValueError('regime_transition does not contain '
+                         'left stochastic matrices.')
+
     # Reshape regime_transition so we can use broadcasting
     shape = (k_regimes, k_regimes)
     shape += (1,) * (order-1)
@@ -184,11 +205,16 @@ def py_hamilton_filter(initial_probabilities, regime_transition,
             transition_t = t
 
         # S_t, S_{t-1}, ..., S_{t-r} | t-1, stored at zero-indexed location t
-        predicted_joint_probabilities[..., t] = (
-            # S_t | S_{t-1}
-            regime_transition[..., transition_t] *
-            # S_{t-1}, S_{t-2}, ..., S_{t-r} | t-1
-            filtered_joint_probabilities[..., t].sum(axis=-1))
+        if order > 0:
+            predicted_joint_probabilities[..., t] = (
+                # S_t | S_{t-1}
+                regime_transition[..., transition_t] *
+                # S_{t-1}, S_{t-2}, ..., S_{t-r} | t-1
+                filtered_joint_probabilities[..., t].sum(axis=-1))
+        else:
+            predicted_joint_probabilities[..., t] = (
+                np.dot(regime_transition[..., transition_t],
+                       filtered_joint_probabilities[..., t]))
 
         # f(y_t, S_t, ..., S_{t-r} | t-1)
         tmp = (conditional_likelihoods[..., t] *
@@ -218,11 +244,18 @@ def cy_hamilton_filter(initial_probabilities, regime_transition,
     Parameters
     ----------
     initial_probabilities : array
-        Array of initial probabilities, shaped (k_regimes,).
+        Array of initial probabilities, shaped (k_regimes,) giving the
+        distribution of the regime process at time t = -order where order
+        is a nonnegative integer.
     regime_transition : array
         Matrix of regime transition probabilities, shaped either
         (k_regimes, k_regimes, 1) or if there are time-varying transition
-        probabilities (k_regimes, k_regimes, nobs).
+        probabilities (k_regimes, k_regimes, nobs + order).  Entry [i, j,
+        t] contains the probability of moving from j at time t-1 to i at
+        time t, so each matrix regime_transition[:, :, t] should be left
+        stochastic.  The first order entries and initial_probabilities are
+        used to produce the initial joint distribution of dimension order +
+        1 at time t=0.
     conditional_likelihoods : array
         Array of likelihoods conditional on the last `order+1` regimes,
         shaped (k_regimes,)*(order + 1) + (nobs,).
@@ -251,6 +284,14 @@ def cy_hamilton_filter(initial_probabilities, regime_transition,
     nobs = conditional_likelihoods.shape[-1]
     order = conditional_likelihoods.ndim - 2
     dtype = conditional_likelihoods.dtype
+
+    # Check for compatible shapes.
+    incompatible_shapes = (
+        regime_transition.shape[-1] not in (1, nobs + order)
+        or regime_transition.shape[:2] != (k_regimes, k_regimes)
+        or conditional_likelihoods.shape[0] != k_regimes)
+    if incompatible_shapes:
+        raise ValueError('Arguments do not have compatible shapes')
 
     # Storage
     # Pr[S_t = s_t | Y_t]
